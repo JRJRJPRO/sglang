@@ -537,6 +537,15 @@ impl SamplingParams {
                 self.top_k
             )));
         }
+        // Python `MAX_TOP_K`: the scheduler copies top_k into an int32 tensor,
+        // and a larger value overflows there and kills the scheduler.
+        if self.top_k > i64::from(i32::MAX) {
+            return Err(bad(format!(
+                "top_k must be -1 (disable) or at most {}, got {}",
+                i32::MAX,
+                self.top_k
+            )));
+        }
         if !(-2.0..=2.0).contains(&self.frequency_penalty) {
             return Err(bad(format!(
                 "frequency_penalty must be in [-2, 2], got {}",
@@ -923,6 +932,7 @@ mod tests {
         for (json, want) in [
             (r#"{"top_p": 2.0}"#, "top_p"),
             (r#"{"top_k": 0, "temperature": 0.7}"#, "top_k"),
+            (r#"{"top_k": 2147483648, "temperature": 0.7}"#, "top_k"),
             (r#"{"min_p": 1.5}"#, "min_p"),
             (r#"{"frequency_penalty": 3.0}"#, "frequency_penalty"),
             (r#"{"presence_penalty": -3.0}"#, "presence_penalty"),
@@ -957,6 +967,8 @@ mod tests {
             r#"{"min_p": 0.0, "temperature": 0.7}"#,
             r#"{"min_p": 1.0, "temperature": 0.7}"#,
             r#"{"top_k": 1, "temperature": 0.7}"#,
+            // int32::MAX is the last value the scheduler's int32 tensor holds.
+            r#"{"top_k": 2147483647, "temperature": 0.7}"#,
             r#"{"frequency_penalty": 2.0}"#,
             r#"{"frequency_penalty": -2.0}"#,
             r#"{"presence_penalty": 2.0}"#,
@@ -984,6 +996,7 @@ mod tests {
             r#"{"top_p": 0.0, "temperature": 0.7}"#, // exclusive lower bound
             r#"{"repetition_penalty": 0.0}"#,        // exclusive lower bound
             r#"{"top_k": 0, "temperature": 0.7}"#,
+            r#"{"top_k": 2147483648, "temperature": 0.7}"#, // int32::MAX + 1
             r#"{"min_p": 1.0000001, "temperature": 0.7}"#,
             r#"{"frequency_penalty": 2.0000001}"#,
             r#"{"presence_penalty": -2.0000001}"#,

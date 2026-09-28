@@ -38,6 +38,9 @@ CustomParamValue = Union[
 
 _SAMPLING_EPS = 1e-6
 TOP_K_ALL = 1 << 30
+# `top_k` is shipped to the sampler as an int32 tensor (SamplingBatchInfo.top_ks);
+# a larger value overflows there and crashes the scheduler, so `verify` rejects it.
+MAX_TOP_K = 2**31 - 1
 MAX_STOP_COUNT = 32
 MAX_STOP_REGEX_LEN = 256
 MAX_STOP_REGEX_COUNT = 32
@@ -235,6 +238,10 @@ class SamplingParams(msgspec.Struct, kw_only=True, array_like=True):
         if self.top_k < 1 or self.top_k == -1:
             raise ValueError(
                 f"top_k must be -1 (disable) or at least 1, got {self.top_k}."
+            )
+        if self.top_k > MAX_TOP_K:
+            raise ValueError(
+                f"top_k must be -1 (disable) or at most {MAX_TOP_K}, got {self.top_k}."
             )
         if not -2.0 <= self.frequency_penalty <= 2.0:
             raise ValueError(

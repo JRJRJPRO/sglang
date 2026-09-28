@@ -20,6 +20,7 @@ from sglang.srt.sampling.sampling_params import (
     MAX_STOP_COUNT,
     MAX_STOP_REGEX_COUNT,
     MAX_STOP_REGEX_LEN,
+    MAX_TOP_K,
     REQUEST_REASONING_END_TOKEN_IDS_KEY,
     TOP_K_ALL,
     SamplingParams,
@@ -210,6 +211,28 @@ class TestSamplingParamsVerify(CustomTestCase):
         sp.top_k = -2  # bypass __init__ conversion
         with self.assertRaises(ValueError):
             sp.verify(self.VOCAB_SIZE)
+
+    def test_top_k_above_int32_raises(self):
+        """verify() must reject top_k > 2**31 - 1.
+
+        top_k is copied into an int32 tensor when the batch is built; a larger
+        value raises "value cannot be converted to type int32 without overflow"
+        inside the scheduler and takes the whole server down, so it has to be
+        rejected at admission like the other out-of-range fields.
+        """
+        for top_k in (MAX_TOP_K + 1, 2**63 - 1):
+            with self.subTest(top_k=top_k):
+                with self.assertRaisesRegex(ValueError, "top_k"):
+                    self._make(top_k=top_k).verify(self.VOCAB_SIZE)
+
+    def test_top_k_at_or_above_vocab_is_valid(self):
+        """top_k >= vocab_size is "whole vocabulary", not an error: the sampler
+        masks nothing for it, so the upper bound is the int32 range, not the
+        vocab size. Both the default sentinel and the int32 maximum pass."""
+        self.assertEqual(MAX_TOP_K, 2**31 - 1)
+        for top_k in (self.VOCAB_SIZE, self.VOCAB_SIZE + 1, TOP_K_ALL, MAX_TOP_K):
+            with self.subTest(top_k=top_k):
+                self._make(top_k=top_k).verify(self.VOCAB_SIZE)
 
     # --- frequency_penalty ---
     def test_frequency_penalty_below_minus_two_raises(self):
