@@ -49,16 +49,35 @@ class CustomLogitProcessor(ABC):
 
 
 class DisallowedTokensLogitsProcessor(CustomLogitProcessor):
+    """Mask each request's own `token_ids` to -inf.
+
+    Requests that share a processor are batched into one call, so
+    `custom_param_list[i]` is the parameter dict of row `i`. Each row is
+    masked with its own list; rows without one are left untouched.
+    """
+
     def __call__(
         self,
         logits: torch.Tensor,
         custom_param_list: Optional[List[Dict[str, Any]]] = None,
     ) -> torch.Tensor:
-        disallowed_token_ids = custom_param_list[0]["token_ids"]
-        assert all(disallowed_token_ids == c["token_ids"] for c in custom_param_list), (
-            f"{custom_param_list=}"
-        )
-        logits[..., disallowed_token_ids] = -float("inf")
+        if not custom_param_list:
+            return logits
+
+        rows: List[int] = []
+        cols: List[int] = []
+        for row, params in enumerate(custom_param_list):
+            token_ids = params.get("token_ids") if params else None
+            if not token_ids:
+                continue
+            rows.extend([row] * len(token_ids))
+            cols.extend(token_ids)
+
+        if rows:
+            # One index tensor for the whole batch: a single H2D copy instead
+            # of one per row.
+            index = torch.tensor([rows, cols], device=logits.device)
+            logits[index[0], index[1]] = -float("inf")
         return logits
 
 

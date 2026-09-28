@@ -135,12 +135,69 @@ class TestDisallowedTokensLogitsProcessor(CustomTestCase):
         self.assertEqual(result[0, 4].item(), 1.0)
         self.assertTrue(torch.isinf(result[0, 3]) and result[0, 3] < 0)
 
-    def test_mismatched_params_raises(self):
-        """Test that mismatched token_ids across batch items raises AssertionError."""
+    def test_each_row_masks_its_own_token_ids(self):
+        """Rows with different token_ids are masked independently, not
+        broadcast from the first row and not rejected.
+
+        Two concurrent requests that ban different tokens land in the same
+        batch (they share the processor), so this is the normal serving case.
+        """
         logits = torch.zeros(2, 10)
         params = [{"token_ids": [1, 2]}, {"token_ids": [3, 4]}]
-        with self.assertRaises(AssertionError):
-            self.processor(logits, params)
+        result = self.processor(logits, params)
+        self.assertEqual(torch.isinf(result[0]).nonzero().flatten().tolist(), [1, 2])
+        self.assertEqual(torch.isinf(result[1]).nonzero().flatten().tolist(), [3, 4])
+
+    def test_rows_without_token_ids_are_left_unchanged(self):
+        """A row whose params are None, empty, or have no/empty token_ids keeps
+        its logits; only rows that carry a list are masked."""
+        logits = torch.zeros(4, 10)
+        params = [None, {}, {"token_ids": []}, {"token_ids": [7]}]
+        result = self.processor(logits, params)
+        self.assertTrue(torch.isfinite(result[:3]).all())
+        self.assertEqual(torch.isinf(result[3]).nonzero().flatten().tolist(), [7])
+
+    def test_none_or_empty_param_list_returns_unchanged(self):
+        for params in (None, []):
+            with self.subTest(params=params):
+                logits = torch.zeros(2, 10)
+                result = self.processor(logits, params)
+                self.assertTrue(torch.isfinite(result).all())
+
+    def test_batch_with_different_token_ids_through_sampler(self):
+        """The scheduler path: two requests with different token_ids in one
+        batch, with the speculative-decoding row repeat, must not raise and
+        must mask each request's tokens on every one of its rows."""
+        params = [{"token_ids": [1, 2]}, {"token_ids": [5]}]
+        num_tokens = 2
+        sampling_info = SamplingBatchInfo(
+            temperatures=torch.ones(2, 1),
+            top_ps=torch.ones(2),
+            top_ks=torch.zeros(2, dtype=torch.int32),
+            min_ps=torch.zeros(2),
+            is_all_greedy=False,
+            is_any_greedy=False,
+            need_top_p_sampling=False,
+            need_top_k_sampling=False,
+            need_min_p_sampling=False,
+            vocab_size=8,
+            has_custom_logit_processor=True,
+            custom_params=params,
+            custom_logit_processor={
+                0: ProcessorEntry(
+                    processor=self.processor, rows=[0, 1], indices=torch.tensor([0, 1])
+                )
+            },
+            device="cpu",
+        )
+        logits = torch.zeros(2 * num_tokens, 8)
+
+        apply_custom_logit_processor(
+            logits, sampling_info, num_tokens_in_batch=num_tokens
+        )
+
+        masked = [torch.isinf(row).nonzero().flatten().tolist() for row in logits]
+        self.assertEqual(masked, [[1, 2], [1, 2], [5], [5]])
 
 
 # ThinkingBudgetLogitProcessor (using Qwen3 variant)
